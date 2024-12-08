@@ -1,8 +1,8 @@
 <?php
 
-namespace MigraGenie\Commands;
+namespace Mrnamra\Migragenie\Commands;
 
-use Illuminate\Support\Str;
+use Mrnamra\Migragenie\Commands\BaseCommand;
 
 class CreateTableCommand extends BaseCommand
 {
@@ -12,15 +12,16 @@ class CreateTableCommand extends BaseCommand
     public function handle()
     {
         $tableName = $this->ask('Enter the table name');
-        $idType = $this->askWithOptions('Choose ID type', ['int', 'uuid']);
+        $idType = $this->choice('Choose ID type', ['int', 'uuid'], 0);
         $columns = [];
         
         while (true) {
             $field = $this->ask('Enter column name (or type "done" to finish)');
-            if ($field === 'done') break;
+            if (strtolower($field) === 'done') break;
 
-            $dataType = $this->askWithOptions("Choose data type for $field", ['string', 'integer', 'boolean', 'text', 'date', 'float']);
-            $columns[] = compact('field', 'dataType');
+            $dataType = $this->choice("Choose data type for $field", ['string', 'integer', 'boolean', 'text', 'date', 'float']);
+            $nullable = $this->choice("Should $field be nullable?", ['NO', 'yes'], 0) === 'yes' ? '->nullable()' : '';
+            $columns[] = compact('field', 'dataType', 'nullable');
         }
 
         // Generate migration file
@@ -36,10 +37,10 @@ class CreateTableCommand extends BaseCommand
     protected function generateCreateMigration($tableName, $idType, $columns)
     {
         $fieldsCode = collect($columns)->map(function ($col) {
-            return "\$table->{$col['dataType']}('{$col['field']}');";
+            return "\$table->{$col['dataType']}('{$col['field']}'){$col['nullable']};";
         })->implode("\n            ");
 
-        $idLine = $idType === 'uuid' ? "\$table->uuid('id')->primary();" : "\$table->increments('id');";
+        $idLine = $idType === 'uuid' ? "\$table->uuid('id')->primary();" : "\$table->id();";
 
         return <<<EOT
 <?php

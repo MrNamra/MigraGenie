@@ -1,13 +1,13 @@
 <?php
 
-namespace MigraGenie;
+namespace Mrnamra\Migragenie;
 
 use Illuminate\Support\ServiceProvider;
-use MigraGenie\Commands\CreateTableCommand;
-use MigraGenie\Commands\AlterTableCommand;
-use MigraGenie\Commands\SetupStructureCommand;
+use Mrnamra\Migragenie\Commands\CreateTableCommand;
+use Mrnamra\Migragenie\Commands\AlterTableCommand;
+use Mrnamra\Migragenie\Commands\SetupStructureCommand;
 
-class MigraGenieServiceProvider extends ServiceProvider
+class MigragenieServiceProvider extends ServiceProvider
 {
     public function register()
     {

@@ -1,6 +1,6 @@
 <?php
 
-namespace YourVendor\YourPackage\Commands;
+namespace Mrnamra\Migragenie\Commands;
 
 use Illuminate\Console\Command;
 

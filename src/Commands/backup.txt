@@ -1,0 +1,475 @@
+<?php
+
+namespace Mrnamra\Migragenie\Commands;
+
+use Illuminate\Support\Facades\DB;
+use Mrnamra\Migragenie\Commands\BaseCommand;
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Question\ChoiceQuestion;
+
+class AlterTableCommand extends BaseCommand
+{
+    protected $signature = 'migragenie:alter';
+    protected $description = 'Alter an existing table by adding, modifying, or removing columns.';
+
+    public function handle()
+    {
+        $tables = $this->getAllTableNames();
+        
+        if (empty($tables)) {
+            $this->error('No tables found in the database.');
+            return;
+        }
+    
+        $tableName = $this->choice('Select a table to alter', $tables);
+    
+        $actions = ['add column', 'modify column', 'remove column'];
+        $action = $this->choice('Choose action', $actions, 0); // Default to first option (index 0)
+    
+        switch ($action) {
+            case 'add column':
+                $this->addColumn($tableName);
+                break;
+            case 'modify column':
+                $this->modifyColumn($tableName);
+                break;
+            case 'remove column':
+                $this->removeColumn($tableName);
+                break;
+        }
+    }
+
+    protected function addColumn($tableName)
+    {
+        do {
+            $field = $this->ask('Enter column name');
+            $field = trim($field);
+    
+            if (empty($field)) {
+                $this->error('Column name cannot be empty. Please enter a valid column name.');
+                continue;
+            }
+    
+            if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $field)) {
+                $this->error('Invalid column name. Use only letters, numbers, and underscores. Must start with a letter or underscore.');
+                continue;
+            }
+    
+            $existingColumns = $this->getTableColumns($tableName);
+            if (in_array($field, $existingColumns)) {
+                $this->error("Column '$field' already exists in the table. Choose a different name.");
+                continue;
+            }
+    
+            break;
+        } while (true);
+    
+        $dataTypeOptions = [
+            'integer', 
+            'string', 
+            'boolean', 
+            'text', 
+            'date', 
+            'float',
+            'other'
+        ];
+    
+        $dataType = $this->choice("Choose data type for $field", $dataTypeOptions, 0);
+        if ($dataType === 'other') {
+            $dataType = $this->ask('Enter your custom data type (e.g., decimal, enum, json)');
+        }
+
+        if ($dataType == 'enum') {
+            echo "Enter the allowed values for the enum (comma-separated): ";
+            $input = trim(fgets(STDIN));
+            $values = array_map('trim', explode(',', $input));
+            $enumValues = "'" . implode("','", $values) . "'";
+            $migrationCode = "\$table->enum('pp', [$enumValues])->first();";
+        }
+    
+        $nullable = $this->confirm('Should this column be nullable?', false);
+    
+        $isForeignKey = $this->confirm('Is this a foreign key?', false);
+    
+        // Add placement functionality
+        $afterColumn = null;
+    
+        if (!empty($existingColumns)) {
+            $placementOptions = ['First column'] + $existingColumns;
+            $placementIndex = $this->choice('Select the position of the new column (it add after a selected column)', $placementOptions);
+    
+            if ($placementIndex === 'First column') {
+                $afterColumn = 'FIRST';
+            } else {
+                $afterColumn = $placementIndex; // Store the column name for AFTER clause
+            }
+        }
+    
+        if ($isForeignKey) {
+            $referencedTable = $this->choice('Select referenced table', $this->getAllTableNames());
+            
+            $referencedColumns = $this->getTableColumns($referencedTable);
+    
+            if (empty($referencedColumns)) {
+                $this->error("No columns found in table $referencedTable");
+                return;
+            }
+    
+            $referencedColumn = $this->choice('Select referenced column', $referencedColumns, 0);
+    
+            $migrationContent = $this->generateAlterMigrationWithPlacementAndForeignKey(
+                $tableName, 
+                $field, 
+                $dataType, 
+                $nullable, 
+                $afterColumn, 
+                $referencedTable, 
+                $referencedColumn
+            );
+        } else {
+            $migrationContent = $this->generateAlterMigrationWithPlacement(
+                $tableName, 
+                $field, 
+                $dataType, 
+                $nullable, 
+                $afterColumn
+            );
+        }
+    
+        $fileName = date('Y_m_d_His') . "_alter_{$tableName}_table.php";
+        $path = database_path("migrations/{$fileName}");
+        file_put_contents($path, $migrationContent);
+    
+        $this->info("Migration created: $path");
+    }
+
+    protected function getTableColumns($tableName)
+    {
+        try {
+            // Use information_schema to get column names
+            $database = env('DB_DATABASE');
+            $columns = DB::select("
+                SELECT COLUMN_NAME, COLUMN_KEY
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+                ORDER BY CASE WHEN COLUMN_KEY = 'PRI' THEN 0 ELSE 1 END
+            ", [$database, $tableName]);
+    
+            // Convert to array of column names, with primary key first
+            $columnNames = array_map(function($column) {
+                return $column->COLUMN_NAME;
+            }, $columns);
+    
+            return $columnNames;
+        } catch (\Exception $e) {
+            $this->error('Could not retrieve columns: ' . $e->getMessage());
+            return [];
+        }
+    }
+    
+    protected function generateAlterMigrationWithForeignKey($tableName, $field, $dataType, $nullable, $referencedTable, $referencedColumn)
+    {
+        $nullableCode = $nullable ? '->nullable()' : '';
+    
+        return <<<EOT
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+class Alter{$tableName}Table extends Migration
+{
+    public function up()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->{$dataType}('$field'){$nullableCode};
+            \$table->foreign('$field')->references('$referencedColumn')->on('$referencedTable');
+        });
+    }
+
+    public function down()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->dropForeign(['$field']);
+            \$table->dropColumn('$field');
+        });
+    }
+}
+EOT;
+    }
+
+
+    protected function generateDropPrimaryKeyCode($isPrimaryKey)
+    {
+        return $isPrimaryKey ? "\$table->dropColumn('id');" : '';
+    }
+
+    protected function modifyColumn($tableName)
+    {
+        $columns = $this->getTableColumns($tableName);
+        
+        if (empty($columns)) {
+            $this->error("No columns found in table $tableName");
+            return;
+        }
+    
+        $columnToModify = $this->choice('Select column to modify', $columns);
+    
+        $dataTypeOptions = [
+            'string' => [
+                'varchar(255)',
+                'text',
+                'mediumText',
+                'longText'
+            ],
+            'numeric' => [
+                'integer',
+                'bigInteger',
+                'smallInteger',
+                'tinyInteger',
+                'decimal(8,2)',
+                'float',
+                'double'
+            ],
+            'date/time' => [
+                'date',
+                'datetime',
+                'timestamp',
+                'time',
+                'year'
+            ],
+            'boolean' => [
+                'boolean'
+            ],
+            'other' => [
+                'json',
+                'binary',
+                'enum'
+            ]
+        ];
+    
+        $flattenedDataTypes = [];
+        foreach ($dataTypeOptions as $category => $types) {
+            foreach ($types as $type) {
+                $flattenedDataTypes[] = $type;
+            }
+        }
+    
+        $newDataType = $this->choice('Select new data type', $flattenedDataTypes);
+    
+        if (strpos($newDataType, '---') === 0) {
+            $this->error('Please select a valid data type');
+            return;
+        }
+    
+        $nullable = $this->confirm('Should this column be nullable?', false);
+    
+        // Generate migration content for modifying the column
+        $migrationContent = $this->generateModifyColumnMigration(
+            $tableName, 
+            $columnToModify, 
+            $newDataType, 
+            $nullable
+        );
+    
+        // Create migration file
+        $fileName = date('Y_m_d_His') . "_modify_{$columnToModify}_in_{$tableName}_table.php";
+        $path = database_path("migrations/{$fileName}");
+        file_put_contents($path, $migrationContent);
+    
+        $this->info("Migration created: $path");
+    }
+
+    protected function removeColumn($tableName)
+    {
+        $columns = $this->getTableColumns($tableName);
+        
+        if (empty($columns)) {
+            $this->error("No columns found in table $tableName");
+            return;
+        }
+    
+        // Allow user to select column to remove
+        $columnToRemove = $this->choice('Select column to remove', $columns);
+    
+        // Generate migration content for removing the column
+        $migrationContent = $this->generateRemoveColumnMigration($tableName, $columnToRemove);
+    
+        // Create migration file
+        $fileName = date('Y_m_d_His') . "_remove_{$columnToRemove}_from_{$tableName}_table.php";
+        $path = database_path("migrations/{$fileName}");
+        file_put_contents($path, $migrationContent);
+    
+        $this->info("Migration created: $path");
+    }
+
+    protected function getAllTableNames()
+    {
+        try {
+            $tables = DB::select('SHOW TABLES');
+            
+            return array_map(function($table) {
+                return $table->{'Tables_in_' . env('DB_DATABASE')};
+            }, $tables);
+        } catch (\Exception $e) {
+            $this->error('Could not retrieve table names: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    protected function generateRemoveColumnMigration($tableName, $columnToRemove)
+    {
+        return <<<EOT
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+class Remove{$columnToRemove}FromTable extends Migration
+{
+    public function up()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->dropColumn('$columnToRemove');
+        });
+    }
+
+    public function down()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->string('$columnToRemove')->nullable();
+        });
+    }
+}
+EOT;
+    }
+
+    protected function generateAlterMigration($tableName, $field, $dataType, $nullable)
+    {
+        $nullableCode = $nullable ? '->nullable()' : '';
+
+    return <<<EOT
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+class Alter{$tableName}Table extends Migration
+{
+    public function up()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->{$dataType}('$field'){$nullableCode};
+        });
+    }
+
+    public function down()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->dropColumn('$field');
+        });
+    }
+}
+EOT;
+    }
+
+    protected function generateModifyColumnMigration($tableName, $columnToModify, $newDataType, $nullable)
+    {
+        $nullableCode = $nullable ? '->nullable()' : '';
+
+        return <<<EOT
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+class Modify{$columnToModify}InTable extends Migration
+{
+    public function up()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->{$newDataType}('$columnToModify'){$nullableCode}->change();
+        });
+    }
+
+    public function down()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->string('$columnToModify')->nullable()->change();
+        });
+    }
+}
+EOT;
+    }
+
+    protected function generateAlterMigrationWithPlacement($tableName, $field, $dataType, $nullable, $placement)
+    {
+        $nullableCode = $nullable ? '->nullable()' : '';
+        $placementCode = $placement === 'FIRST' ? 'first()' : "->after('{$placement}')";
+
+        return <<<EOT
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+class Alter{$tableName}Table extends Migration
+{
+    public function up()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->{$dataType}('$field'){$nullableCode}{$placementCode};
+        });
+    }
+
+    public function down()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->dropColumn('$field');
+        });
+    }
+}
+EOT;
+    }
+
+    protected function generateAlterMigrationWithPlacementAndForeignKey($tableName, $field, $dataType, $nullable, $placement, $referencedTable, $referencedColumn)
+    {
+        $nullableCode = $nullable ? '->nullable()' : '';
+        $placementCode = $placement === 'FIRST' ? ' FIRST' : " AFTER `{$placement}`";
+
+        return <<<EOT
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+class Alter{$tableName}Table extends Migration
+{
+    public function up()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->{$dataType}('$field'){$nullableCode}{$placementCode};
+            \$table->foreign('$field')->references('$referencedColumn')->on('$referencedTable');
+        });
+    }
+
+    public function down()
+    {
+        Schema::table('$tableName', function (Blueprint \$table) {
+            \$table->dropForeign(['$field']);
+            \$table->dropColumn('$field');
+        });
+    }
+}
+EOT;
+    }
+
+
+}
