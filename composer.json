@@ -1,0 +1,16 @@
+{
+    "name": "mrnamra/migragenie",
+    "type": "library",
+    "autoload": {
+        "psr-4": {
+            "Mrnamra\\Migragenie\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "MrNamra",
+            "email": "namraramsha@yahoo.com"
+        }
+    ],
+    "require": {}
+}
